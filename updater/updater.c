@@ -32,6 +32,9 @@
 // (Note it's "updateR-script", not the older "update-script".)
 #define SCRIPT_NAME "META-INF/com/google/android/updater-script"
 
+//add by mmk@rock-chips.com
+char* g_package_file;
+
 struct selabel_handle *sehandle;
 
 int main(int argc, char** argv) {
@@ -66,6 +69,7 @@ int main(int argc, char** argv) {
     // Extract the script from the package.
 
     char* package_data = argv[3];
+    g_package_file = package_data;
     ZipArchive za;
     int err;
     err = mzOpenZipArchive(package_data, &za);

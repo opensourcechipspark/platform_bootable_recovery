@@ -33,6 +33,7 @@
 #include "roots.h"
 #include "verifier.h"
 #include "ui.h"
+#include "bootloader.h"
 
 extern RecoveryUI* ui;
 
@@ -44,6 +45,16 @@ static const int VERIFICATION_PROGRESS_TIME = 60;
 static const float VERIFICATION_PROGRESS_FRACTION = 0.25;
 static const float DEFAULT_FILES_PROGRESS_FRACTION = 0.4;
 static const float DEFAULT_IMAGE_PROGRESS_FRACTION = 0.1;
+
+#if TARGET_BOARD_PLATFORM == rockchip
+extern bool bClearbootmessage;
+#endif
+
+#ifdef USE_BOARD_ID
+extern "C" int custom();
+extern "C" int restore();
+static bool gIfBoardIdCustom = false;
+#endif
 
 // If the package contains an update binary, extract it and run it.
 static int
@@ -178,6 +189,13 @@ try_update_binary(const char *path, ZipArchive *zip, int* wipe_cache) {
 static int
 really_install_package(const char *path, int* wipe_cache)
 {
+	//by mmk@rock-chips.com
+	//if update loader, we hope not clear misc command.
+	//default not clear misc command, let the update-script of update.zip to clear misc when no update loader.
+#if TARGET_BOARD_PLATFORM == rockchip
+	bClearbootmessage = true;
+#endif
+
     ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
     ui->Print("Finding update package...\n");
     // Give verification half the progress bar...
@@ -220,6 +238,14 @@ really_install_package(const char *path, int* wipe_cache)
         return INSTALL_CORRUPT;
     }
 
+#ifdef USE_BOARD_ID
+    ensure_path_mounted("/cust");
+    ensure_path_mounted("/system");
+    restore();
+
+    gIfBoardIdCustom = true;
+#endif
+
     /* Verify and install the contents of the package.
      */
     ui->Print("Installing update...\n");
@@ -236,6 +262,11 @@ install_package(const char* path, int* wipe_cache, const char* install_file)
     } else {
         LOGE("failed to open last_install: %s\n", strerror(errno));
     }
+
+#ifdef USE_BOARD_ID
+	gIfBoardIdCustom = false;
+#endif
+
     int result;
     if (setup_install_mounts() != 0) {
         LOGE("failed to set up expected mounts for install; aborting\n");
@@ -248,5 +279,14 @@ install_package(const char* path, int* wipe_cache, const char* install_file)
         fputc('\n', install_log);
         fclose(install_log);
     }
+
+#ifdef USE_BOARD_ID
+    if(gIfBoardIdCustom) {
+    	ensure_path_mounted("/cust");
+    	ensure_path_mounted("/system");
+    	custom();
+    }
+#endif
+
     return result;
 }

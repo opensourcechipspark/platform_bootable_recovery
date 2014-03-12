@@ -25,7 +25,8 @@ LOCAL_SRC_FILES := \
     ui.cpp \
     screen_ui.cpp \
     verifier.cpp \
-    adb_install.cpp
+    adb_install.cpp \
+    rkimage.cpp
 
 LOCAL_MODULE := recovery
 
@@ -34,6 +35,7 @@ LOCAL_FORCE_STATIC_EXECUTABLE := true
 RECOVERY_API_VERSION := 3
 RECOVERY_FSTAB_VERSION := 2
 LOCAL_CFLAGS += -DRECOVERY_API_VERSION=$(RECOVERY_API_VERSION)
+LOCAL_CFLAGS += -D_FILE_OFFSET_BITS=64
 
 LOCAL_STATIC_LIBRARIES := \
     libext4_utils_static \
@@ -52,12 +54,40 @@ LOCAL_STATIC_LIBRARIES := \
     libselinux \
     libstdc++ \
     libm \
-    libc
+    libc \
+    libedify \
+    libapplypatch \
+    libminelf \
+    librsa \
+    libcrc32 \
+    librk_emmcutils  
 
 ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_CFLAGS += -DUSE_EXT4
     LOCAL_C_INCLUDES += system/extras/ext4_utils
     LOCAL_STATIC_LIBRARIES += libext4_utils_static libz
+endif
+
+ifeq ($(RECOVERY_UPDATEIMG_RSA_CHECK), true)
+$(warning recovery use updateimg rsa check!)
+LOCAL_CFLAGS += -DUSE_RSA_CHECK
+else
+$(warning recovery use updateimg crc32 check!)
+endif
+
+ifeq ($(RECOVERY_BOARD_ID), true)
+$(warning recovery use board id!)
+LOCAL_CFLAGS += -DUSE_BOARD_ID
+LOCAL_STATIC_LIBRARIES += libboard_id_recovery libxml2_recovery
+else
+$(warning recovery not use board id!)
+endif
+
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rkps2board)
+LOCAL_CFLAGS += -DTARGET_RKPS2
+endif
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk2928board)
+LOCAL_CFLAGS += -DTARGET_RK30
 endif
 
 # This binary is in the recovery ramdisk, which is otherwise a copy of root.
@@ -71,6 +101,11 @@ ifeq ($(TARGET_RECOVERY_UI_LIB),)
 else
   LOCAL_STATIC_LIBRARIES += $(TARGET_RECOVERY_UI_LIB)
 endif
+
+# TARGET_BOARD_PLATFORM is change from rockchip to rk29xx or rk30xx
+# so force TARGET_BOARD_PLATFORM to be rockchip in recovery cpp file
+LOCAL_CFLAGS += -DTARGET_BOARD_PLATFORM=rockchip
+LOCAL_CFLAGS += -fpermissive
 
 LOCAL_C_INCLUDES += system/extras/ext4_utils
 
@@ -103,4 +138,10 @@ include $(LOCAL_PATH)/minui/Android.mk \
     $(LOCAL_PATH)/tools/Android.mk \
     $(LOCAL_PATH)/edify/Android.mk \
     $(LOCAL_PATH)/updater/Android.mk \
-    $(LOCAL_PATH)/applypatch/Android.mk
+    $(LOCAL_PATH)/emmcutils/Android.mk	\
+    $(LOCAL_PATH)/applypatch/Android.mk \
+    $(LOCAL_PATH)/rsa/Android.mk	\
+    $(LOCAL_PATH)/crc/Android.mk	\
+    $(LOCAL_PATH)/board_id/Android.mk	\
+    $(LOCAL_PATH)/libxml2/Android.mk
+    

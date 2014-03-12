@@ -172,6 +172,10 @@ bail:
     return -1;
 }
 
+int mtd_get_partition_index(MtdPartition *partition)
+{
+	return partition->device_index;
+}
 const MtdPartition *
 mtd_find_partition_by_name(const char *name)
 {
@@ -249,8 +253,16 @@ mtd_partition_info(const MtdPartition *partition,
     if (ret < 0) return -1;
 
     if (total_size != NULL) *total_size = mtd_info.size;
+#if TARGET_BOARD_PLATFORM == rockchip
+    if (erase_size != NULL)
+        *erase_size = (mtd_info.erasesize>32*512)?mtd_info.erasesize:32*512;
+    
+    if (write_size != NULL)
+        *write_size = (mtd_info.erasesize>32*512)?mtd_info.erasesize:32*512;
+#else
     if (erase_size != NULL) *erase_size = mtd_info.erasesize;
     if (write_size != NULL) *write_size = mtd_info.writesize;
+#endif
     return 0;
 }
 
@@ -287,6 +299,18 @@ void mtd_read_skip_to(const MtdReadContext* ctx, size_t offset) {
 
 static int read_block(const MtdPartition *partition, int fd, char *data)
 {
+#if TARGET_BOARD_PLATFORM == rockchip
+
+    ssize_t size = partition->erase_size;
+    off_t pos = lseek(fd, 0, SEEK_CUR);
+    if (read(fd, data, size) != size) {
+	    fprintf(stderr, "mtd: read error (%s)\n", strerror(errno));
+	    errno = ENOSPC;
+	    return -1;
+	}
+	return 0;
+	
+#else
     struct mtd_ecc_stats before, after;
     if (ioctl(fd, ECCGETSTATS, &before)) {
         printf("mtd: ECCGETSTATS error (%s)\n", strerror(errno));
@@ -324,6 +348,7 @@ static int read_block(const MtdPartition *partition, int fd, char *data)
 
     errno = ENOSPC;
     return -1;
+#endif
 }
 
 ssize_t mtd_read_data(MtdReadContext *ctx, char *data, size_t len)
@@ -406,6 +431,23 @@ static void add_bad_block_offset(MtdWriteContext *ctx, off_t pos) {
 
 static int write_block(MtdWriteContext *ctx, const char *data)
 {
+#if TARGET_BOARD_PLATFORM == rockchip
+	
+    const MtdPartition *partition = ctx->partition;
+    int fd = ctx->fd;
+    off_t pos = lseek(fd, 0, SEEK_CUR);
+    if (pos == (off_t) -1) return 1;
+
+    ssize_t size = partition->erase_size;
+
+	if (write(fd, data, size) != size) {
+	    fprintf(stderr,"mtd: write error (%s)\n", strerror(errno));
+	    errno = ENOSPC;
+	    return -1;
+	}
+	return 0;
+	
+#else
     const MtdPartition *partition = ctx->partition;
     int fd = ctx->fd;
 
@@ -471,6 +513,7 @@ static int write_block(MtdWriteContext *ctx, const char *data)
     // Ran out of space on the device
     errno = ENOSPC;
     return -1;
+#endif
 }
 
 ssize_t mtd_write_data(MtdWriteContext *ctx, const char *data, size_t len)
@@ -523,6 +566,13 @@ off_t mtd_erase_blocks(MtdWriteContext *ctx, int blocks)
     }
 
     // Erase the specified number of blocks
+#if TARGET_BOARD_PLATFORM == rockchip
+    memset(ctx->buffer, 0xFF, ctx->partition->erase_size);
+    while (blocks-- > 0) {
+	if (write_block(ctx, ctx->buffer)) 
+		return -1;
+	}
+#else
     while (blocks-- > 0) {
         loff_t bpos = pos;
         if (ioctl(ctx->fd, MEMGETBADBLOCK, &bpos) > 0) {
@@ -539,7 +589,7 @@ off_t mtd_erase_blocks(MtdWriteContext *ctx, int blocks)
         }
         pos += ctx->partition->erase_size;
     }
-
+#endif
     return pos;
 }
 

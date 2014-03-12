@@ -29,6 +29,10 @@
 #include "applypatch.h"
 #include "mtdutils/mtdutils.h"
 #include "edify/expr.h"
+#include "emmcutils/rk_emmcutils.h"
+#if TARGET_BOARD_PLATFORM == rockchip
+#include "mtdutils/rk29.h"
+#endif
 
 static int LoadPartitionContents(const char* filename, FileContents* file);
 static ssize_t FileSink(unsigned char* data, ssize_t len, void* token);
@@ -142,17 +146,24 @@ static int LoadPartitionContents(const char* filename, FileContents* file) {
     const char* magic = strtok(copy, ":");
 
     enum PartitionType type;
+    int emmcEnabled = getEmmcState();
+    char temp[64];
 
-    if (strcmp(magic, "MTD") == 0) {
+    if (strcmp(magic, "MTD") == 0 && emmcEnabled == 0) {
         type = MTD;
-    } else if (strcmp(magic, "EMMC") == 0) {
+    } else if (strcmp(magic, "EMMC") == 0 || emmcEnabled == 1) {
         type = EMMC;
     } else {
         printf("LoadPartitionContents called with bad filename (%s)\n",
                filename);
         return -1;
     }
+
     const char* partition = strtok(NULL, ":");
+    if(emmcEnabled) {
+		transformPath(partition, temp);
+		partition = temp;
+    }
 
     int i;
     int colons = 0;
@@ -243,7 +254,11 @@ static int LoadPartitionContents(const char* filename, FileContents* file) {
                     break;
 
                 case EMMC:
+#if TARGET_BOARD_PLATFORM == rockchip
+                    read = rk29_fread(p, 1, next, dev);
+#else
                     read = fread(p, 1, next, dev);
+#endif
                     break;
             }
             if (next != read) {
@@ -364,15 +379,23 @@ int WriteToPartition(unsigned char* data, size_t len,
     const char* magic = strtok(copy, ":");
 
     enum PartitionType type;
-    if (strcmp(magic, "MTD") == 0) {
+    int emmcEnabled = getEmmcState();
+    char temp[64];
+
+    if (strcmp(magic, "MTD") == 0 && emmcEnabled == 0) {
         type = MTD;
-    } else if (strcmp(magic, "EMMC") == 0) {
+    } else if (strcmp(magic, "EMMC") == 0 || emmcEnabled == 1) {
         type = EMMC;
     } else {
         printf("WriteToPartition called with bad target (%s)\n", target);
         return -1;
     }
+
     const char* partition = strtok(NULL, ":");
+    if(emmcEnabled) {
+    	transformPath(partition, temp);
+    	partition = temp;
+    }
 
     if (partition == NULL) {
         printf("bad partition target name \"%s\"\n", target);

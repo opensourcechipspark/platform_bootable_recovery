@@ -19,6 +19,9 @@
 #include "common.h"
 #include "mtdutils/mtdutils.h"
 #include "roots.h"
+#if TARGET_BOARD_PLATFORM == rockchip
+#include "mtdutils/rk29.h"
+#endif
 
 #include <errno.h>
 #include <stdio.h>
@@ -31,6 +34,10 @@ static int set_bootloader_message_mtd(const struct bootloader_message *in, const
 static int get_bootloader_message_block(struct bootloader_message *out, const Volume* v);
 static int set_bootloader_message_block(const struct bootloader_message *in, const Volume* v);
 
+#if TARGET_BOARD_PLATFORM == rockchip
+static int get_bootloader_message_block_rk29(struct bootloader_message *out, const Volume* v);
+static int set_bootloader_message_block_rk29(const struct bootloader_message *in, const Volume* v);
+#endif
 int get_bootloader_message(struct bootloader_message *out) {
     Volume* v = volume_for_path("/misc");
     if (v == NULL) {
@@ -40,7 +47,11 @@ int get_bootloader_message(struct bootloader_message *out) {
     if (strcmp(v->fs_type, "mtd") == 0) {
         return get_bootloader_message_mtd(out, v);
     } else if (strcmp(v->fs_type, "emmc") == 0) {
+   #if TARGET_BOARD_PLATFORM == rockchip
+   	return get_bootloader_message_block_rk29(out, v);
+   #else
         return get_bootloader_message_block(out, v);
+   #endif
     }
     LOGE("unknown misc partition fs_type \"%s\"\n", v->fs_type);
     return -1;
@@ -55,7 +66,11 @@ int set_bootloader_message(const struct bootloader_message *in) {
     if (strcmp(v->fs_type, "mtd") == 0) {
         return set_bootloader_message_mtd(in, v);
     } else if (strcmp(v->fs_type, "emmc") == 0) {
+    #if TARGET_BOARD_PLATFORM == rockchip
+	return set_bootloader_message_block_rk29(in, v);
+    #else
         return set_bootloader_message_block(in, v);
+    #endif
     }
     LOGE("unknown misc partition fs_type \"%s\"\n", v->fs_type);
     return -1;
@@ -169,7 +184,11 @@ static int get_bootloader_message_block(struct bootloader_message *out,
         return -1;
     }
     struct bootloader_message temp;
+#if TARGET_BOARD_PLATFORM == rockchip
+    int count = rk29_fread(&temp, sizeof(temp), 1, f);
+#else
     int count = fread(&temp, sizeof(temp), 1, f);
+#endif
     if (count != 1) {
         LOGE("Failed reading %s\n(%s)\n", v->blk_device, strerror(errno));
         return -1;
@@ -185,12 +204,20 @@ static int get_bootloader_message_block(struct bootloader_message *out,
 static int set_bootloader_message_block(const struct bootloader_message *in,
                                         const Volume* v) {
     wait_for_device(v->blk_device);
+#if TARGET_BOARD_PLATFORM == rockchip
+    FILE* f = fopen(v->blk_device, "wb+");
+#else
     FILE* f = fopen(v->blk_device, "wb");
+#endif
     if (f == NULL) {
         LOGE("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
         return -1;
     }
+#if TARGET_BOARD_PLATFORM == rockchip
+    int count = rk29_fwrite(in, sizeof(*in), 1, f);
+#else
     int count = fwrite(in, sizeof(*in), 1, f);
+#endif
     if (count != 1) {
         LOGE("Failed writing %s\n(%s)\n", v->blk_device, strerror(errno));
         return -1;
@@ -201,3 +228,63 @@ static int set_bootloader_message_block(const struct bootloader_message *in,
     }
     return 0;
 }
+
+// ------------------------------------
+// for misc partitions on rk29 devices
+// ------------------------------------
+
+static int get_bootloader_message_block_rk29(struct bootloader_message *out,
+                                        const Volume* v) {
+    FILE* f = fopen(v->blk_device, "rb");
+    if (f == NULL) {
+        LOGE("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    const ssize_t size =READ_SIZE * MISC_PAGES;	
+    char data[size];
+	
+    int count = rk29_fread(data, size, 1, f);
+
+    if (count != 1) {
+        LOGE("Failed reading %s\n(%s)\n", v->blk_device, strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        LOGE("Failed closing %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    memcpy(out, &data[READ_SIZE * MISC_COMMAND_PAGE], sizeof(*out));
+    return 0;
+}
+	
+static int set_bootloader_message_block_rk29(const struct bootloader_message *in,
+                                        const Volume* v) {
+
+    FILE* f = fopen(v->blk_device, "wb+");
+
+    if (f == NULL) {
+        LOGE("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+
+    const ssize_t size =WRITE_SIZE * MISC_PAGES;	
+    char data[size];
+
+    memset(data,0,size);
+    memcpy(&data[WRITE_SIZE * MISC_COMMAND_PAGE], in, sizeof(*in));
+	
+    int count = rk29_fwrite(data, size, 1, f);
+
+    if (count != 1) {
+        LOGE("Failed writing %s\n(%s)\n", v->blk_device, strerror(errno));
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        LOGE("Failed closing %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+

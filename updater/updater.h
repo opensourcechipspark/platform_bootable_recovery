@@ -23,6 +23,8 @@
 #include <selinux/selinux.h>
 #include <selinux/label.h>
 
+typedef struct fstab_rec Volume;
+
 typedef struct {
     FILE* cmd_pipe;
     ZipArchive* package_zip;
@@ -31,4 +33,9 @@ typedef struct {
 
 extern struct selabel_handle *sehandle;
 
+struct bootloader_message {
+    char command[32];
+    char status[32];
+    char recovery[1024];
+};
 #endif
