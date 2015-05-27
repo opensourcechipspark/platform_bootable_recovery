@@ -48,9 +48,18 @@ extern "C" {
 #include "edify/expr.h"
 #include "applypatch/applypatch.h"
 #include "verifier.h"
+#include "board_id/custom.h"
+#include "board_id/restore.h"
 }
 
-extern bool bClearbootmessage;
+#ifdef USE_RADICAL_UPDATE
+#include "radical_update.h"
+#endif
+
+extern bool gIfBoardIdCustom;
+
+
+extern bool bIfUpdateLoader;
 extern RecoveryUI* ui;
 extern struct selabel_handle *sehandle;
 
@@ -149,11 +158,12 @@ typedef struct _RK28BOOT_HEAD{
 
 	unsigned int        uiFlashBootOffset;
 	unsigned int		uiFlashBootLen;
-	
+	unsigned char       ucRc4Flag;
+
 	unsigned int		MergerVersion;		// Generate Boot file Merger tools used the version number of the high 16 bytes (mainly low 16 byte acted as the version number of the version number)
 }RK28BOOT_HEAD, *PRK28BOOT_HEAD;
 
-#define  BOOT_RESERVED_SIZE 59
+#define  BOOT_RESERVED_SIZE 57
 typedef enum
 {
 		RK27_DEVICE=1,
@@ -189,6 +199,8 @@ typedef struct
 	unsigned char ucLoaderEntryCount;
 	unsigned int dwLoaderEntryOffset;
 	unsigned char ucLoaderEntrySize;
+	unsigned char ucSignFlag;
+	unsigned char ucRc4Flag;
 	unsigned char reserved[BOOT_RESERVED_SIZE];
 }STRUCT_RKBOOT_HEAD,*PSTRUCT_RKBOOT_HEAD;
 typedef struct  
@@ -247,9 +259,10 @@ int make_loader_data(const char* old_loader, char* new_loader, int *new_loader_s
     new_hdr->uiFlashDataLen = pFlashDataEntry->dwDataSize;
     new_hdr->uiFlashBootOffset = new_hdr->uiFlashDataOffset+new_hdr->uiFlashDataLen;
     new_hdr->uiFlashBootLen = pFlashBootEntry->dwDataSize;
-    memcpy(new_loader+new_hdr->uiFlashDataOffset, old_loader+pFlashDataEntry->dwDataOffset, pFlashDataEntry->dwDataSize);
-    memcpy(new_loader+new_hdr->uiFlashBootOffset, old_loader+pFlashBootEntry->dwDataOffset, pFlashBootEntry->dwDataSize);
-    *new_loader_size = new_hdr->uiFlashBootOffset+new_hdr->uiFlashBootLen;
+	new_hdr->ucRc4Flag = boot_hdr->ucRc4Flag;
+	memcpy(new_loader+new_hdr->uiFlashDataOffset, old_loader+pFlashDataEntry->dwDataOffset, pFlashDataEntry->dwDataSize);
+	memcpy(new_loader+new_hdr->uiFlashBootOffset, old_loader+pFlashBootEntry->dwDataOffset, pFlashBootEntry->dwDataSize);
+	*new_loader_size = new_hdr->uiFlashBootOffset+new_hdr->uiFlashBootLen;
 //    dump_data(new_loader, HEADINFO_SIZE);
     
     return 0;
@@ -530,11 +543,11 @@ int open_partition_path(const char *part_name, int mode, char* path) {
 	char mtdname[32];
     Volume* v = volume_for_path(part_name);
     if(!strcmp(v->fs_type, "mtd")) {
-    	if(p = strstr(v->blk_device,"/dev/block/mtd/by-name/"))
+#ifdef USE_OLD_NAND_DRIVER
+		if(p = strstr(v->blk_device,"/dev/block/mtd/by-name/"))
     		strcpy(mtdname,p+23);
 		else
 			strcpy(mtdname,v->blk_device);
-
 		const MtdPartition* partition = mtd_find_partition_by_name(mtdname);
 		if (partition == NULL) {
 			LOGE("failed to find \"%s\" partition to mount at \"%s\"\n",
@@ -543,6 +556,12 @@ int open_partition_path(const char *part_name, int mode, char* path) {
 		}
 
 		sprintf(path, "/dev/mtd/mtd%d", mtd_get_partition_index((MtdPartition*)partition));
+#else
+		if(p = strstr(v->blk_device,"/dev/block/rknand_"))
+		    strcpy(path, v->blk_device);
+		else
+			sprintf(path, "/dev/block/rknand_%s", v->blk_device);
+#endif
     }else {
     	strcpy(path, v->blk_device);
     }
@@ -555,7 +574,7 @@ int open_partition_path(const char *part_name, int mode, char* path) {
     return fd;
 }
 
-#define MAX_LOADER_LEN      256*1024
+#define MAX_LOADER_LEN      1024*1024
 
 int write_loader(const char* src, const char* dest, int woffset)
 {
@@ -1225,7 +1244,7 @@ int cmd_write_blcmd(const char *blcmd)
 	set_bootloader_message(&boot);
 
 // avoid deleting command in misc when exit recovery
-	bClearbootmessage = true;
+	bIfUpdateLoader = true;
 
     return 0;
 }
@@ -2103,6 +2122,18 @@ int install_rkimage(const char* update_file) {
     gIfBoardIdCustom = true;
 #endif
 
+#ifdef USE_RADICAL_UPDATE
+    CHECK_FUNC_CALL( ensure_path_mounted(RU_MOUNT_POINT) , result, update_error);
+    CHECK_FUNC_CALL( ensure_path_mounted(SYSTEM_MOUNT_POINT) , result, update_error);
+    if ( RadicalUpdate_isApplied() )
+    {
+        I("a ru_pkg is applied, to reset the flag 'ru_is_applied' befor install rk_img");
+        RadicalUpdate_restoreFirmwaresInOtaVer();
+    }
+    ensure_path_unmounted(RU_MOUNT_POINT);
+    ensure_path_unmounted(SYSTEM_MOUNT_POINT);
+#endif
+
 	if( !strncmp(update_file, "/mnt/external_sd", 16) ) {
 		ui->Print("Check parameter...\n");
    	    if(image_compare("parameter", "/parameter", 0)) {
@@ -2254,7 +2285,7 @@ int install_rkimage(const char* update_file) {
 		goto update_error;
 	}
 // when install rkimage, rk29 can be to update loader,misc must be written before install rkimage finish 
-	bClearbootmessage = true;
+    bIfUpdateLoader = true;
 	
 #endif
 

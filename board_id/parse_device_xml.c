@@ -22,22 +22,30 @@
 #include "libxml/SAX2.h"
 #include "libxml/xmlstring.h"
 
+#include "common.h"
+
 static bool gIfMatch = false;
+/* 当前机器上, 当前定制处理的设备实例机器类型的字串标识. 诸如 type="tp" dev="Goodix-TS"; 用来匹配 device.xml 中的对应 element. */
 static xmlChar *gDev;
 static xmlChar *gType;
+/**
+ * 根据 device.xml 的内容, 具体完成定制操作的策略回调函数. 
+ * 对于 custom 操作, 是 custom.c, customHandler(). 
+ * 对于 restore 操作, 是 restore.c, restoreHandler(). 
+ */
 static handlerFun gHandlerFun;
 
 
 
-static xmlChar* getAttrValueByName(xmlChar *name, int attrNum, xmlChar **attributes) {
-	//printf("getAttrValueByName: attr Num %d \n", attrNum);
+static xmlChar* getAttrValueByName(xmlChar *name, int attrNum, const xmlChar **attributes) {
+	LOGV("getAttrValueByName: attr Num %d \n", attrNum);
 	int i;
 	for(i = 0; i < attrNum; i++) {
-		//printf("attrname = %s\n", attributes[i*5]);
+		LOGV("attrname = %s\n", attributes[i*5]);
 		if(!xmlStrcmp(attributes[i*5], name)) {
-			xmlChar* str = xmlStrchr(attributes[i*5 + 3], '"');
+			const xmlChar* str = xmlStrchr(attributes[i*5 + 3], '"');
 			xmlChar* ret = xmlStrndup(attributes[i*5 + 3], str - attributes[i*5 + 3]);
-			//printf("value = %s \n", ret);
+			LOGV("value = %s \n", ret);
 			return ret;
 		}
 	}
@@ -58,7 +66,7 @@ static int attrCmp(xmlChar *attr, xmlChar *value) {
 		return 0;
 	}
 
-	//printf("attrcmp: attr=%s, value=%s \n", attr, value);
+	LOGV("attrcmp: attr=%s, value=%s \n", attr, value);
 	if(*attr == '!') {
 		if(!xmlStrcmp(attr + 1, value)) {
 			return -1;
@@ -101,7 +109,7 @@ static void device_OnStartElementNs(
 		}
 
 		if(gIfMatch) {
-			printf("==========> catch a device condition\n");
+			LOGE("==========> catch a device condition\n");
 		}
 	}else if(!xmlStrcmp(localname, BAD_CAST "cp") || !xmlStrcmp(localname, BAD_CAST "CP")) {
 		if(gIfMatch) {
@@ -110,7 +118,7 @@ static void device_OnStartElementNs(
 			attr2 = getAttrValueByName(BAD_CAST "des", nb_attributes, attributes);
 			attr3 = getAttrValueByName(BAD_CAST "mode", nb_attributes, attributes);
 
-			printf("cp %s %s %s\n", attr1, attr2, attr3);
+			LOGD("cp %s %s %s\n", attr1, attr2, attr3);
 			char *argv[3];
 			argv[0] = (char *)attr1;
 			argv[1] = (char *)attr2;
@@ -122,7 +130,7 @@ static void device_OnStartElementNs(
 			// do remove
 			attr1 = getAttrValueByName(BAD_CAST "src", nb_attributes, attributes);
 
-			printf("rm %s \n", attr1);
+			LOGD("rm %s \n", attr1);
 			char *argv[1];
 			argv[0] = (char *)attr1;
 			gHandlerFun((char *)localname, 1, argv);
@@ -132,7 +140,7 @@ static void device_OnStartElementNs(
 			// do set
 			attr1 = getAttrValueByName(BAD_CAST "name", nb_attributes, attributes);
 			attr2 = getAttrValueByName(BAD_CAST "value", nb_attributes, attributes);
-			printf("set %s=%s \n", attr1, attr2);
+			LOGD("set %s=%s \n", attr1, attr2);
 			char *argv[2];
 			argv[0] = (char *)attr1;
 			argv[1] = (char *)attr2;
@@ -160,7 +168,7 @@ static void device_OnEndElementNs(
     const xmlChar* prefix,
     const xmlChar* URI )
 {
-	//printf("end element tag: %s \n", localname);
+	LOGV("end element tag: %s \n", localname);
 
 	if(!xmlStrcmp(localname, BAD_CAST "if")) {
 		gIfMatch = false;

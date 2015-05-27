@@ -106,5 +106,5 @@ apply_from_adb(RecoveryUI* ui_, int* wipe_cache, const char* install_file) {
         }
         return INSTALL_ERROR;
     }
-    return install_package(ADB_SIDELOAD_FILENAME, wipe_cache, install_file);
+    return install_package(ADB_SIDELOAD_FILENAME, wipe_cache, install_file, 0);
 }

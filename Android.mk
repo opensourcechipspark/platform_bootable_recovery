@@ -13,7 +13,7 @@
 # limitations under the License.
 
 LOCAL_PATH := $(call my-dir)
-
+prebuilt_stdcxx_PATH := prebuilts/ndk/current/sources/cxx-stl/
 
 include $(CLEAR_VARS)
 
@@ -25,8 +25,7 @@ LOCAL_SRC_FILES := \
     ui.cpp \
     screen_ui.cpp \
     verifier.cpp \
-    adb_install.cpp \
-    rkimage.cpp
+    adb_install.cpp
 
 LOCAL_MODULE := recovery
 
@@ -36,6 +35,15 @@ RECOVERY_API_VERSION := 3
 RECOVERY_FSTAB_VERSION := 2
 LOCAL_CFLAGS += -DRECOVERY_API_VERSION=$(RECOVERY_API_VERSION)
 LOCAL_CFLAGS += -D_FILE_OFFSET_BITS=64
+
+
+LOCAL_C_INCLUDES := \
+	$(prebuilt_stdcxx_PATH)/gnu-libstdc++/include\
+	$(prebuilt_stdcxx_PATH)/gnu-libstdc++/libs/$(TARGET_CPU_ABI)/include\
+	bionic \
+	bionic/libstdc++/include \
+	$(LOCAL_PATH)/rkupdate
+LOCAL_CPPFLAGS += -fexceptions -frtti
 
 LOCAL_STATIC_LIBRARIES := \
     libext4_utils_static \
@@ -52,15 +60,18 @@ LOCAL_STATIC_LIBRARIES := \
     libcutils \
     liblog \
     libselinux \
+    librkupdate\
+    libext2_uuid\
+    librkrsa\
+    libgnustl_static\
     libstdc++ \
     libm \
     libc \
     libedify \
     libapplypatch \
     libminelf \
-    librsa \
-    libcrc32 \
-    librk_emmcutils  
+    librk_emmcutils
+    
 
 ifeq ($(TARGET_USERIMAGES_USE_EXT4), true)
     LOCAL_CFLAGS += -DUSE_EXT4
@@ -83,8 +94,18 @@ else
 $(warning recovery not use board id!)
 endif
 
-ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rkps2board)
-LOCAL_CFLAGS += -DTARGET_RKPS2
+ifeq ($(RECOVERY_WITH_RADICAL_UPDATE), true)
+$(warning recovery with radical_update!)
+LOCAL_CFLAGS += -DUSE_RADICAL_UPDATE
+LOCAL_STATIC_LIBRARIES += libradical_update_recovery libxml2_recovery
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/radical_update/inc
+else
+$(warning recovery without radical_update!)
+endif
+# LOCAL_CFLAGS += -E
+
+ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk30board)
+LOCAL_CFLAGS += -DTARGET_RK30
 endif
 ifeq ($(strip $(TARGET_BOARD_HARDWARE)),rk2928board)
 LOCAL_CFLAGS += -DTARGET_RK30
@@ -129,7 +150,6 @@ LOCAL_STATIC_LIBRARIES := \
     libc
 include $(BUILD_EXECUTABLE)
 
-
 include $(LOCAL_PATH)/minui/Android.mk \
     $(LOCAL_PATH)/minelf/Android.mk \
     $(LOCAL_PATH)/minzip/Android.mk \
@@ -140,8 +160,11 @@ include $(LOCAL_PATH)/minui/Android.mk \
     $(LOCAL_PATH)/updater/Android.mk \
     $(LOCAL_PATH)/emmcutils/Android.mk	\
     $(LOCAL_PATH)/applypatch/Android.mk \
-    $(LOCAL_PATH)/rsa/Android.mk	\
-    $(LOCAL_PATH)/crc/Android.mk	\
     $(LOCAL_PATH)/board_id/Android.mk	\
-    $(LOCAL_PATH)/libxml2/Android.mk
+    $(LOCAL_PATH)/libxml2/Android.mk \
+    $(LOCAL_PATH)/radical_update/Android.mk \
+    $(LOCAL_PATH)/rkupdate/stl/Android.mk \
+    $(LOCAL_PATH)/rkupdate/rsa/Android.mk \
+    $(LOCAL_PATH)/rkupdate/update/Android.mk
+
     

@@ -23,11 +23,20 @@
 extern "C" {
 #endif
 
+#ifdef USE_RADICAL_UPDATE
+#define RU_MOUNT_POINT "/radical_update"
+#endif
+#define SYSTEM_MOUNT_POINT "/system"
+
 // Load and parse volume data from /etc/recovery.fstab.
 void load_volume_table();
 
 // Return the Volume* record for this path (or NULL).
 Volume* volume_for_path(const char* path);
+
+// Return the Volume* record for this partition name (or NULL).
+Volume* volume_for_name(const char* name);
+
 
 // Make sure that the volume 'path' is on is mounted.  Returns 0 on
 // success (volume is mounted).

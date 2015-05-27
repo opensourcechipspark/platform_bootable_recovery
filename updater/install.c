@@ -35,6 +35,9 @@
 #include <linux/xattr.h>
 #include <inttypes.h>
 
+#include "bootloader.h"
+#include "applypatch/applypatch.h"
+#include "cutils/android_reboot.h"
 #include "cutils/misc.h"
 #include "cutils/properties.h"
 #include "edify/expr.h"
@@ -43,21 +46,140 @@
 #include "mtdutils/mounts.h"
 #include "mtdutils/mtdutils.h"
 #include "updater.h"
-#include "applypatch/applypatch.h"
-#include "cutils/android_reboot.h"
 #include "mtdutils/rk29.h"
 #include "emmcutils/rk_emmcutils.h"
 
-static int set_bootloader_message(const struct bootloader_message *in);
+static int set_bootloader_message_local(const struct bootloader_message *in);
 static int set_bootloader_message_block_rk29(const struct bootloader_message *in, const Volume* v);
+static int get_bootloader_message_block_rk29(struct bootloader_message *out, const Volume* v);
 static int set_bootloader_message_mtd(const struct bootloader_message *in, const Volume* v);
+static int get_bootloader_message_mtd(struct bootloader_message *out, const Volume* v);
 static int set_bootloader_message_block(const struct bootloader_message *in, const Volume* v);
+static int get_bootloader_message_block(struct bootloader_message *out, const Volume* v);
 static void load_volume_table();
 static Volume* volume_for_path(const char* path);
 static int parse_options(char* options, Volume* volume);
-
+static char* getDevicePath(char *mtdDevice);
 extern char* g_package_file;
 static struct fstab *fstab = NULL;
+
+static const int MISC_PAGES = 3;         // number of pages to save
+static const int MISC_COMMAND_PAGE = 1;  // bootloader command is this page
+#if 0
+int main(int argc, char** argv) {
+    printf("Begin main\n");
+    char *stagestr = "2/3";
+    struct bootloader_message msg;
+    memset(&msg, 0, sizeof(struct bootloader_message));
+    get_bootloader_message_local(&msg);
+    //int max_size = sizeof(((struct bootloader_message*)0)->stage);
+    //int max_size = sizeof(((struct bootloader_message*)0)->stage);
+    int max_size = 4;
+    memcpy(&(msg.stage), stagestr, max_size);
+    set_bootloader_message_local(&msg);
+    
+    memset(&msg, 0, sizeof(struct bootloader_message));
+    get_bootloader_message_local(&msg);
+
+		printf("iiiii   %s\n", msg.stage);
+    return 0;
+}
+#endif 
+
+static char* getDevicePath(char *mtdDevice) {
+	int emmcEnabled = getEmmcState();
+	char devicePath[128] = "/";
+	if(emmcEnabled) {
+		if(fstab == NULL) {
+			load_volume_table();
+		}
+	
+		if(strstr(mtdDevice, "/dev/block/rknand_")) {
+			strcat(devicePath, mtdDevice+18);
+			printf("mtd device %s\n", devicePath);
+			Volume* v = volume_for_path(devicePath);
+			if (v != NULL) {
+				printf("get volume path %s\n", v->blk_device);
+				return v->blk_device;
+			}else {
+				printf("Cannot load volume %s!\n", devicePath);
+			}
+		}
+	}
+
+	return mtdDevice;
+}
+
+static int get_bootloader_message_block_rk29(struct bootloader_message *out,
+                                        const Volume* v) {
+    FILE* f = fopen(v->blk_device,"rb");
+    if (f == NULL) {
+        printf("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    const ssize_t size =READ_SIZE * MISC_PAGES;	
+    char data[size];
+	
+    int count = rk29_fread(data, size, 1, f);
+
+    if (count != 1) {
+        printf("Failed reading %s\n(%s)\n", v->blk_device, strerror(errno));
+        fclose(f);
+        return -1;
+    }
+     if (fclose(f) != 0) {
+        printf("Failed closing %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    memcpy(out, &data[READ_SIZE * MISC_COMMAND_PAGE], sizeof(*out));
+    return 0;
+}
+int get_bootloader_message_local(struct bootloader_message *out) {
+    if(fstab == NULL) {
+		load_volume_table();
+	}
+    Volume* v = volume_for_path("/misc");
+    if (v == NULL) {
+      printf("Cannot load volume /misc!\n");
+      return -1;
+    }
+    if (strcmp(v->fs_type, "mtd") == 0) {
+        return get_bootloader_message_mtd(out, v);
+    } else if (strcmp(v->fs_type, "emmc") == 0) {
+   #if TARGET_BOARD_PLATFORM == rockchip
+   	return get_bootloader_message_block_rk29(out, v);
+   #else
+        return get_bootloader_message_block(out, v);
+   #endif
+    }
+    printf("unknown misc partition fs_type \"%s\"\n", v->fs_type);
+    return -1;
+}
+static int get_bootloader_message_block(struct bootloader_message *out,
+                                        const Volume* v) {
+    wait_for_device(v->blk_device);
+    FILE* f = fopen(v->blk_device, "rb");
+    if (f == NULL) {
+        printf("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    struct bootloader_message temp;
+#if TARGET_BOARD_PLATFORM == rockchip
+    int count = rk29_fread(&temp, sizeof(temp), 1, f);
+#else
+    int count = fread(&temp, sizeof(temp), 1, f);
+#endif
+    if (count != 1) {
+        printf("Failed reading %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        printf("Failed closing %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+    memcpy(out, &temp, sizeof(temp));
+    return 0;
+}
 
 // mount(fs_type, partition_type, location, mount_point)
 //
@@ -109,28 +231,30 @@ Value* MountFn(const char* name, State* state, int argc, Expr* argv[]) {
         setfscreatecon(NULL);
     }
 
+    char *device = getDevicePath(location);
+
     if (strcmp(partition_type, "MTD") == 0) {
         mtd_scan_partitions();
         const MtdPartition* mtd;
-        mtd = mtd_find_partition_by_name(location);
+        mtd = mtd_find_partition_by_name(device);
         if (mtd == NULL) {
             printf("%s: no mtd partition named \"%s\"",
-                    name, location);
+                    name, device);
             result = strdup("");
             goto done;
         }
         if (mtd_mount_partition(mtd, mount_point, fs_type, 0 /* rw */) != 0) {
             printf("mtd mount of %s failed: %s\n",
-                    location, strerror(errno));
+            		device, strerror(errno));
             result = strdup("");
             goto done;
         }
         result = mount_point;
     } else {
-        if (mount(location, mount_point, fs_type,
+        if (mount(device, mount_point, fs_type,
                   MS_NOATIME | MS_NODEV | MS_NODIRATIME, "") < 0) {
             printf("%s: failed to mount %s at %s: %s\n",
-                    name, location, mount_point, strerror(errno));
+                    name, device, mount_point, strerror(errno));
             result = strdup("");
         } else {
             result = mount_point;
@@ -246,39 +370,41 @@ Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
         goto done;
     }
 
+    char *device = getDevicePath(location);
+
     if (strcmp(partition_type, "MTD") == 0) {
         mtd_scan_partitions();
-        const MtdPartition* mtd = mtd_find_partition_by_name(location);
+        const MtdPartition* mtd = mtd_find_partition_by_name(device);
         if (mtd == NULL) {
             printf("%s: no mtd partition named \"%s\"",
-                    name, location);
+                    name, device);
             result = strdup("");
             goto done;
         }
         MtdWriteContext* ctx = mtd_write_partition(mtd);
         if (ctx == NULL) {
-            printf("%s: can't write \"%s\"", name, location);
+            printf("%s: can't write \"%s\"", name, device);
             result = strdup("");
             goto done;
         }
         if (mtd_erase_blocks(ctx, -1) == -1) {
             mtd_write_close(ctx);
-            printf("%s: failed to erase \"%s\"", name, location);
+            printf("%s: failed to erase \"%s\"", name, device);
             result = strdup("");
             goto done;
         }
         if (mtd_write_close(ctx) != 0) {
-            printf("%s: failed to close \"%s\"", name, location);
+            printf("%s: failed to close \"%s\"", name, device);
             result = strdup("");
             goto done;
         }
         result = location;
 #ifdef USE_EXT4
     } else if (strcmp(fs_type, "ext4") == 0) {
-        int status = rk_make_ext4fs(location, atoll(fs_size), mount_point);
+        int status = rk_make_ext4fs(device, atoll(fs_size), mount_point);
         if (status != 0) {
             printf("%s: make_ext4fs failed (%d) on %s",
-                    name, status, location);
+                    name, status, device);
             result = strdup("");
             goto done;
         }
@@ -286,10 +412,10 @@ Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
 #endif
 #if TARGET_BOARD_PLATFORM == rockchip
     } else if (strcmp(fs_type, "ext3") == 0) {
-        int status = rk_make_ext3fs(location);
+        int status = rk_make_ext3fs(device);
         if (status != 0) {
             printf("%s: make_ext3fs failed (%d) on %s",
-                    name, status, location);
+                    name, status, device);
             result = strdup("");
             goto done;
         }
@@ -298,9 +424,9 @@ Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
 		char volume_label[256] = "\0";
 		property_get("UserVolumeLabel", volume_label, "");
 		printf("VolumeLabel: %s\n", volume_label);
-		int status = make_vfat(location, volume_label);
+		int status = make_vfat(device, volume_label);
 		if (status != 0) {
-			printf("format_volume: make_vfat failed on %s\n", location);
+			printf("format_volume: make_vfat failed on %s\n", device);
 			result = strdup("");
 			goto done;
 		 }
@@ -314,9 +440,9 @@ Value* FormatFn(const char* name, State* state, int argc, Expr* argv[]) {
 		char volume_label[256] = "\0";
 		property_get("UserVolumeLabel", volume_label, "");
 		printf("VolumeLabel: %s\n", volume_label);
-		int status = make_ntfs(location, volume_label);
+		int status = make_ntfs(device, volume_label);
 		if (status != 0) {
-			printf("format_volume: make_ntfs failed on %s\n", location);
+			printf("format_volume: make_ntfs failed on %s\n", device);
 			result = strdup("");
 			goto done;
 		 }
@@ -1073,6 +1199,7 @@ static bool write_raw_image_cb(const unsigned char* data,
 
 // write_raw_image(filename_or_blob, partition)
 Value* WriteRawImageFn(const char* name, State* state, int argc, Expr* argv[]) {
+    usleep(4 * 1000* 1000);
     char* result = NULL;
 
     Value* partition_value;
@@ -1143,6 +1270,7 @@ Value* WriteRawImageFn(const char* name, State* state, int argc, Expr* argv[]) {
 						v->blk_device, strerror(errno));
 			}
     	}
+        fflush(dest_partition);
 
     }else {
 		mtd_scan_partitions();
@@ -1241,82 +1369,133 @@ Value* WriteRawParameterImageFn(const char* name, State* state, int argc, Expr* 
         goto done;
     }
 
-    mtd_scan_partitions();
-    const MtdPartition* mtd = mtd_find_partition_by_name(partition);
-    if (mtd == NULL) {
-        fprintf(stderr, "%s: no mtd partition named \"%s\"\n", name, partition);
-        result = strdup("");
-        goto done;
-    }
+    int emmcEnabled = getEmmcState();
+	Volume *v = NULL;
+	bool success;
+	bool isParemeterSame = true;
+	size_t once_len = 16*1024;
+	size_t compared_len = 0;
+	char* old_parameter_buf = malloc(once_len);
 
-    MtdReadContext* ctx_read = mtd_read_partition(mtd);
-    if (ctx_read == NULL) {
-    	fprintf(stderr, "%s: can't read mtd partition \"%s\"\n",
-    			name, partition);
-    	result = strdup("");
-    	goto done;
-    }
+	if(emmcEnabled) {
+		load_volume_table();
+		char path[64] = "/";
+		strcat(path, partition);
+		v = volume_for_path(path);
+		FILE *dest_partition = fopen(v->blk_device, "rwb");
+		if(dest_partition == NULL) {
+			printf("%s: no emmc partition named \"%s\"\n", name, v->blk_device);
+			result = strdup("");
+			goto done;
+		}
 
-    printf("start compare parameter\n");
-    //compare the new parameter and old parameter
-    bool isParemeterSame = true;
-    size_t once_len = 16*1024;
-    size_t compared_len = 0;
-    char* old_parameter_buf = malloc(once_len);
-    while(compared_len < contents->size) {
-    	memset(old_parameter_buf, 0, once_len);
-    	size_t read = mtd_read_data(ctx_read, old_parameter_buf, once_len);
-    	if(read != once_len) {
-    		printf("read old_parameter error!\n");
-    		result = strdup("");
-    		mtd_read_close(ctx_read);
-    		goto done;
-    	}
+		//compare the parameter
+		printf("start compare parameter\n");
+		while(compared_len < contents->size) {
+			memset(old_parameter_buf, 0, once_len);
+			size_t read = fread(old_parameter_buf, 1, once_len, dest_partition);
+			if(read != once_len) {
+				printf("read old_parameter error!\n");
+				result = strdup("");
+				goto done;
+			}
 
-    	size_t realCompareSize = ((compared_len + read) < contents->size) ? read : (contents->size - compared_len);
-    	if(memcmp(contents->data + compared_len, old_parameter_buf, realCompareSize)) {
-    		isParemeterSame = false;
-    		break;
-    	}
+			size_t realCompareSize = ((compared_len + read) < contents->size) ? read : (contents->size - compared_len);
+			if(memcmp(contents->data + compared_len, old_parameter_buf, realCompareSize)) {
+				isParemeterSame = false;
+				break;
+			}
 
-    	compared_len += read;
-    }
+			compared_len += read;
+		}
 
-    if(isParemeterSame) {
-    	printf("parameter is same, not update!\n");
-    	result = partition;
-    	mtd_read_close(ctx_read);
-    	goto done;
-    }
+		if(isParemeterSame) {
+			printf("parameter is same, not update!\n");
+			result = partition;
+			goto done;
+		}
 
-    mtd_read_close(ctx_read);
+		// update the parameter
+		ssize_t wrote = fwrite(contents->data, 1, contents->size, dest_partition);
+		success = (wrote == contents->size);
 
-    //update parameter
-    MtdWriteContext* ctx = mtd_write_partition(mtd);
-    if (ctx == NULL) {
-        printf("%s: can't write mtd partition \"%s\"\n",
-                name, partition);
-        result = strdup("");
-        goto done;
-    }
+		if (!success) {
+			printf("emmc data write to %s failed: %s\n",
+					v->blk_device, strerror(errno));
+		}
 
-    bool success;
+	}else {
+		mtd_scan_partitions();
+		const MtdPartition* mtd = mtd_find_partition_by_name(partition);
+		if (mtd == NULL) {
+			fprintf(stderr, "%s: no mtd partition named \"%s\"\n", name, partition);
+			result = strdup("");
+			goto done;
+		}
 
-    // we're given a blob as the contents
-    ssize_t wrote = mtd_write_data(ctx, contents->data, contents->size);
-    success = (wrote == contents->size);
+		MtdReadContext* ctx_read = mtd_read_partition(mtd);
+		if (ctx_read == NULL) {
+			fprintf(stderr, "%s: can't read mtd partition \"%s\"\n",
+					name, partition);
+			result = strdup("");
+			goto done;
+		}
 
-    if (!success) {
-        printf("mtd_write_data to %s failed: %s\n",
-                partition, strerror(errno));
-    }
+		printf("start compare parameter\n");
+		//compare the new parameter and old parameter
+		while(compared_len < contents->size) {
+			memset(old_parameter_buf, 0, once_len);
+			size_t read = mtd_read_data(ctx_read, old_parameter_buf, once_len);
+			if(read != once_len) {
+				printf("read old_parameter error!\n");
+				result = strdup("");
+				mtd_read_close(ctx_read);
+				goto done;
+			}
 
-    if (mtd_erase_blocks(ctx, -1) == -1) {
-        printf("%s: error erasing blocks of %s\n", name, partition);
-    }
-    if (mtd_write_close(ctx) != 0) {
-        printf("%s: error closing write of %s\n", name, partition);
-    }
+			size_t realCompareSize = ((compared_len + read) < contents->size) ? read : (contents->size - compared_len);
+			if(memcmp(contents->data + compared_len, old_parameter_buf, realCompareSize)) {
+				isParemeterSame = false;
+				break;
+			}
+
+			compared_len += read;
+		}
+
+		if(isParemeterSame) {
+			printf("parameter is same, not update!\n");
+			result = partition;
+			mtd_read_close(ctx_read);
+			goto done;
+		}
+
+		mtd_read_close(ctx_read);
+
+		//update parameter
+		MtdWriteContext* ctx = mtd_write_partition(mtd);
+		if (ctx == NULL) {
+			printf("%s: can't write mtd partition \"%s\"\n",
+					name, partition);
+			result = strdup("");
+			goto done;
+		}
+
+		// we're given a blob as the contents
+		ssize_t wrote = mtd_write_data(ctx, contents->data, contents->size);
+		success = (wrote == contents->size);
+
+		if (!success) {
+			printf("mtd_write_data to %s failed: %s\n",
+					partition, strerror(errno));
+		}
+
+		if (mtd_erase_blocks(ctx, -1) == -1) {
+			printf("%s: error erasing blocks of %s\n", name, partition);
+		}
+		if (mtd_write_close(ctx) != 0) {
+			printf("%s: error closing write of %s\n", name, partition);
+		}
+	}
 
     result = success ? partition : strdup("");
 
@@ -1327,7 +1506,7 @@ Value* WriteRawParameterImageFn(const char* name, State* state, int argc, Expr* 
     char cmd[100] = "recovery\n--update_package=";
     strcat(cmd, g_package_file);
     strlcpy(boot.recovery, cmd, sizeof(boot.recovery));
-    set_bootloader_message(&boot);
+    set_bootloader_message_local(&boot);
 
     printf("update parameter success, reboot now...\n");
     android_reboot(ANDROID_RB_RESTART2, 0, "recovery");
@@ -1343,7 +1522,7 @@ Value* ClearMiscCommandFn(const char* name, State* state, int argc, Expr* argv[]
 	printf("clear misc command!\n");
 	struct bootloader_message boot;
 	memset(&boot, 0, sizeof(boot));
-	set_bootloader_message(&boot);
+	set_bootloader_message_local(&boot);
 
 	return StringValue(strdup(""));
 }
@@ -1391,8 +1570,7 @@ static void load_volume_table()
 static Volume* volume_for_path(const char* path) {
     return fs_mgr_get_entry_for_mount_point(fstab, path);
 }
-
-static int set_bootloader_message(const struct bootloader_message *in) {
+static int set_bootloader_message_local(const struct bootloader_message *in) {
 	if(fstab == NULL) {
 		load_volume_table();
 	}
@@ -1409,10 +1587,6 @@ static int set_bootloader_message(const struct bootloader_message *in) {
     printf("unknown misc partition fs_type \"%s\"\n", v->fs_type);
     return -1;
 }
-
-static const int MISC_PAGES = 3;         // number of pages to save
-static const int MISC_COMMAND_PAGE = 1;  // bootloader command is this page
-
 static int set_bootloader_message_mtd(const struct bootloader_message *in,
                                       const Volume* v) {
     size_t write_size;
@@ -1457,10 +1631,36 @@ static int set_bootloader_message_mtd(const struct bootloader_message *in,
     return 0;
 }
 
+static int get_bootloader_message_mtd(struct bootloader_message *out,
+                                      const Volume* v) {
+    size_t write_size;
+    mtd_scan_partitions();
+    const MtdPartition *part = mtd_find_partition_by_name(v->blk_device);
+    if (part == NULL || mtd_partition_info(part, NULL, NULL, &write_size)) {
+        printf("Can't find %s\n", v->blk_device);
+        return -1;
+    }
+
+    MtdReadContext *read = mtd_read_partition(part);
+    if (read == NULL) {
+        printf("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
+        return -1;
+    }
+
+    const ssize_t size = write_size * MISC_PAGES;
+    char data[size];
+    ssize_t r = mtd_read_data(read, data, size);
+    if (r != size) printf("Can't read %s\n(%s)\n", v->blk_device, strerror(errno));
+    mtd_read_close(read);
+    if (r != size) return -1;
+
+    memcpy(out, &data[write_size * MISC_COMMAND_PAGE], sizeof(*out));
+    return 0;
+}
 static int set_bootloader_message_block_rk29(const struct bootloader_message *in,
                                         const Volume* v) {
 
-    FILE* f = fopen(v->blk_device, "wb+");
+    FILE* f = fopen(v->blk_device,"wb+");
 
     if (f == NULL) {
         printf("Can't open %s\n(%s)\n", v->blk_device, strerror(errno));
@@ -1632,6 +1832,7 @@ Value* UIPrintFn(const char* name, State* state, int argc, Expr* argv[]) {
     while (line) {
         fprintf(((UpdaterInfo*)(state->cookie))->cmd_pipe,
                 "ui_print %s\n", line);
+        printf("ui_print :: %s\n", line);
         line = strtok(NULL, "\n");
     }
     fprintf(((UpdaterInfo*)(state->cookie))->cmd_pipe, "ui_print\n");
@@ -1725,7 +1926,6 @@ Value* Sha1CheckFn(const char* name, State* state, int argc, Expr* argv[]) {
     }
 
     if (args[0]->size < 0) {
-        printf("%s(): no file contents received", name);
         return StringValue(strdup(""));
     }
     uint8_t digest[SHA_DIGEST_SIZE];
@@ -1778,12 +1978,11 @@ Value* ReadFileFn(const char* name, State* state, int argc, Expr* argv[]) {
 
     FileContents fc;
     if (LoadFileContents(filename, &fc, RETOUCH_DONT_MASK) != 0) {
-        ErrorAbort(state, "%s() loading \"%s\" failed: %s",
-                   name, filename, strerror(errno));
         free(filename);
-        free(v);
+        v->size = -1;
+        v->data = NULL;
         free(fc.data);
-        return NULL;
+        return v;
     }
 
     v->size = fc.size;
@@ -1791,6 +1990,147 @@ Value* ReadFileFn(const char* name, State* state, int argc, Expr* argv[]) {
 
     free(filename);
     return v;
+}
+
+// Immediately reboot the device.  Recovery is not finished normally,
+// so if you reboot into recovery it will re-start applying the
+// current package (because nothing has cleared the copy of the
+// arguments stored in the BCB).
+//
+// The argument is the partition name passed to the android reboot
+// property.  It can be "recovery" to boot from the recovery
+// partition, or "" (empty string) to boot from the regular boot
+// partition.
+Value* RebootNowFn(const char* name, State* state, int argc, Expr* argv[]) {
+    if (argc != 2) {
+        return ErrorAbort(state, "%s() expects 2 args, got %d", name, argc);
+    }
+
+    char* filename;
+    char* property;
+    if (ReadArgs(state, argv, 2, &filename, &property) < 0) return NULL;
+
+    char buffer[80];
+
+    // zero out the 'command' field of the bootloader message.
+    memset(buffer, 0, sizeof(((struct bootloader_message*)0)->command));
+#if 0
+    FILE* f = fopen(filename, "r+b");
+    fseek(f, offsetof(struct bootloader_message, command), SEEK_SET);
+    fwrite(buffer, sizeof(((struct bootloader_message*)0)->command), 1, f);
+    fclose(f);
+    free(filename);
+#endif
+
+    struct bootloader_message msg;
+    memset(&msg, 0, sizeof(struct bootloader_message));
+    printf("RebootNowFn:: Before get\n");
+    get_bootloader_message_local(&msg);
+    printf("RebootNowFn:: get\n");
+    int max_size = sizeof(((struct bootloader_message*)0)->command);
+    memcpy(&(msg.command), buffer, max_size);
+    printf("RebootNowFn:: Before set\n");
+    set_bootloader_message_local(&msg);
+
+    printf("RebootNowFn:: set\n");
+
+
+    strcpy(buffer, "reboot,");
+    if (property != NULL) {
+        strncat(buffer, property, sizeof(buffer)-10);
+    }
+
+    //property_set(ANDROID_RB_PROPERTY, buffer);
+    sync();
+    sleep(2);
+    printf("Before reboot : property %s \n", buffer);
+    android_reboot(ANDROID_RB_RESTART2, 0, property);
+
+    sleep(5);
+    free(property);
+    ErrorAbort(state, "%s() failed to reboot", name);
+    return NULL;
+}
+
+// Store a string value somewhere that future invocations of recovery
+// can access it.  This value is called the "stage" and can be used to
+// drive packages that need to do reboots in the middle of
+// installation and keep track of where they are in the multi-stage
+// install.
+//
+// The first argument is the block device for the misc partition
+// ("/misc" in the fstab), which is where this value is stored.  The
+// second argument is the string to store; it should not exceed 31
+// bytes.
+Value* SetStageFn(const char* name, State* state, int argc, Expr* argv[]) {
+    if (argc != 2) {
+        return ErrorAbort(state, "%s() expects 2 args, got %d", name, argc);
+    }
+
+    char* filename;
+    char* stagestr;
+    if (ReadArgs(state, argv, 2, &filename, &stagestr) < 0) return NULL;
+    printf("SetStageFn :: %s\n", stagestr);
+
+    // Store this value in the misc partition, immediately after the
+    // bootloader message that the main recovery uses to save its
+    // arguments in case of the device restarting midway through
+    // package installation.
+#if 0
+    FILE* f = fopen(filename, "r+b");
+    fseek(f, offsetof(struct bootloader_message, stage), SEEK_SET);
+    int to_write = strlen(stagestr)+1;
+    int max_size = sizeof(((struct bootloader_message*)0)->stage);
+    if (to_write > max_size) {
+        to_write = max_size;
+        stagestr[max_size-1] = 0;
+    }
+    fwrite(stagestr, to_write, 1, f);
+    fclose(f);
+#endif
+
+    struct bootloader_message msg;
+    memset(&msg, 0, sizeof(struct bootloader_message));
+    printf("SetStageFn :: Before get\n");
+    get_bootloader_message_local(&msg);
+    printf("SetStageFn :: get\n");
+    int max_size = sizeof(((struct bootloader_message*)0)->stage);
+        stagestr[max_size-1] = 0;
+    memcpy(&(msg.stage), stagestr, max_size);
+    printf("SetStageFn :: Before set\n");
+    set_bootloader_message_local(&msg);
+
+    printf("SetStageFn :: set\n");
+
+    free(stagestr);
+    return StringValue(filename);
+}
+
+// Return the value most recently saved with SetStageFn.  The argument
+// is the block device for the misc partition.
+Value* GetStageFn(const char* name, State* state, int argc, Expr* argv[]) {
+    printf("Enter into GetStageFn\n");
+    if (argc != 2) {
+        return ErrorAbort(state, "%s() expects 1 arg, got %d", name, argc);
+    }
+
+    char* filename;
+    if (ReadArgs(state, argv, 1, &filename) < 0) return NULL;
+
+#if 0
+    char buffer[sizeof(((struct bootloader_message*)0)->stage)];
+    FILE* f = fopen(filename, "rb");
+    fseek(f, offsetof(struct bootloader_message, stage), SEEK_SET);
+    fread(buffer, sizeof(buffer), 1, f);
+    fclose(f);
+    buffer[sizeof(buffer)-1] = '\0';
+#endif
+    struct bootloader_message msg;
+    memset(&msg, 0, sizeof(struct bootloader_message));
+    get_bootloader_message_local(&msg);
+
+    printf("StringValue %s\n", msg.stage);
+    return StringValue(strdup(msg.stage));
 }
 
 void RegisterInstallFunctions() {
@@ -1842,4 +2182,8 @@ void RegisterInstallFunctions() {
     RegisterFunction("ui_print", UIPrintFn);
 
     RegisterFunction("run_program", RunProgramFn);
+
+    RegisterFunction("reboot_now", RebootNowFn);
+    RegisterFunction("get_stage", GetStageFn);
+    RegisterFunction("set_stage", SetStageFn);
 }

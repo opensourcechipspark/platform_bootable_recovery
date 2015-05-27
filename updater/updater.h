@@ -33,9 +33,4 @@ typedef struct {
 
 extern struct selabel_handle *sehandle;
 
-struct bootloader_message {
-    char command[32];
-    char status[32];
-    char recovery[1024];
-};
 #endif

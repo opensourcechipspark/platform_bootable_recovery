@@ -21,6 +21,10 @@
 #include "libxml/SAX2.h"
 #include "libxml/xmlstring.h"
 
+#include "common.h"
+
+extern void customHandler(char *command, int argc, char **argv);
+
 static volatile bool gIfMatch = false;
 static xmlChar *gArea;
 static xmlChar *gLocal;
@@ -31,15 +35,15 @@ static handlerFun gHandlerFun;
 
 
 
-static xmlChar* getAttrValueByName(xmlChar *name, int attrNum, xmlChar **attributes) {
-	//printf("getAttrValueByName: attr Num %d \n", attrNum);
+static xmlChar* getAttrValueByName(xmlChar *name, int attrNum, const xmlChar **attributes) {
+	LOGV("getAttrValueByName: attr Num %d \n", attrNum);
 	int i;
 	for(i = 0; i < attrNum; i++) {
-		//printf("attrname = %s\n", attributes[i*5]);
+		LOGV("attrname = %s\n", attributes[i*5]);
 		if(!xmlStrcmp(attributes[i*5], name)) {
-			xmlChar* str = xmlStrchr(attributes[i*5 + 3], '"');
+			const xmlChar* str = xmlStrchr(attributes[i*5 + 3], '"');
 			xmlChar* ret = xmlStrndup(attributes[i*5 + 3], str - attributes[i*5 + 3]);
-			//printf("value = %s \n", ret);
+			LOGV("value = %s \n", ret);
 			return ret;
 		}
 	}
@@ -60,7 +64,7 @@ static int attrCmp(xmlChar *attr, xmlChar *value) {
 		return 0;
 	}
 
-	//printf("attrcmp: attr=%s, value=%s \n", attr, value);
+	LOGV("attrcmp: attr=%s, value=%s \n", attr, value);
 	if(*attr == '!') {
 		if(!xmlStrcmp(attr + 1, value)) {
 			return -1;
@@ -74,8 +78,7 @@ static int attrCmp(xmlChar *attr, xmlChar *value) {
 	return 0;
 }
 
-static void cust_OnStartElementNs(
-    void *ctx,
+static void cust_OnStartElementNs( void *ctx,
     const xmlChar *localname,
     const xmlChar *prefix,
     const xmlChar *URI,
@@ -93,8 +96,8 @@ static void cust_OnStartElementNs(
 	char odex_path[128];
 	char *odex_argv[1];
 
-	//printf("start element tag: %s, attr number %d, default attr num %d, gIfMatch=%d \n",
-	//		localname, nb_attributes, nb_defaulted, gIfMatch);
+	LOGV("start element tag: %s, attr number %d, default attr num %d, gIfMatch=%d \n",
+	    localname, nb_attributes, nb_defaulted, gIfMatch);
 
 	if(!xmlStrcmp(localname, BAD_CAST "if")) {
 		attr1 = getAttrValueByName(BAD_CAST "language", nb_attributes, attributes);
@@ -125,7 +128,7 @@ static void cust_OnStartElementNs(
 		}
 
 		if(gIfMatch) {
-			printf("==========> catch a cust condition\n");
+			LOGI("==========> catch a cust condition\n");
 		}
 	}else if(!xmlStrcmp(localname, BAD_CAST "cp") || !xmlStrcmp(localname, BAD_CAST "CP")) {
 		if(gIfMatch) {
@@ -134,8 +137,8 @@ static void cust_OnStartElementNs(
 			attr2 = getAttrValueByName(BAD_CAST "des", nb_attributes, attributes);
 			attr3 = getAttrValueByName(BAD_CAST "mode", nb_attributes, attributes);
 
-			printf("cp %s %s %s\n", attr1, attr2, attr3);
-			char *argv[3];
+			LOGD("cp %s %s %s\n", attr1, attr2, attr3);
+			char* argv[3];
 			argv[0] = (char *)attr1;
 			argv[1] = (char *)attr2;
 			argv[2] = (char *)attr3;
@@ -147,7 +150,7 @@ static void cust_OnStartElementNs(
 				memset(odex_path, 0, sizeof(odex_path));
 				strncpy(odex_path, argv[1], tmp - argv[1]);
 				strcat(odex_path, "odex");
-				printf("rm %s\n", odex_path);
+				LOGD("rm %s\n", odex_path);
 				odex_argv[0] = odex_path;
 				customHandler("rm", 1, odex_argv);
 			}
@@ -157,7 +160,7 @@ static void cust_OnStartElementNs(
 			// do remove
 			attr1 = getAttrValueByName(BAD_CAST "src", nb_attributes, attributes);
 
-			printf("rm %s \n", attr1);
+			LOGD("rm %s \n", attr1);
 			char *argv[1];
 			argv[0] = (char *)attr1;
 			gHandlerFun((char *)localname, 1, argv);
@@ -168,7 +171,7 @@ static void cust_OnStartElementNs(
 				memset(odex_path, 0, sizeof(odex_path));
 				strncpy(odex_path, argv[0], tmp - argv[0]);
 				strcat(odex_path, "odex");
-				printf("rm %s\n", odex_path);
+				LOGD("rm %s\n", odex_path);
 				odex_argv[0] = odex_path;
 				gHandlerFun("rm", 1, odex_argv);
 			}
@@ -178,7 +181,7 @@ static void cust_OnStartElementNs(
 			// do remove
 			attr1 = getAttrValueByName(BAD_CAST "name", nb_attributes, attributes);
 			attr2 = getAttrValueByName(BAD_CAST "value", nb_attributes, attributes);
-			printf("set %s=%s \n", attr1, attr2);
+			LOGD("set %s=%s \n", attr1, attr2);
 			char *argv[2];
 			argv[0] = (char *)attr1;
 			argv[1] = (char *)attr2;
@@ -214,7 +217,7 @@ static void cust_OnEndElementNs(
     const xmlChar* prefix,
     const xmlChar* URI )
 {
-	//printf("end element tag: %s \n", localname);
+	LOGV("end element tag: %s \n", localname);
 
 	if(!xmlStrcmp(localname, BAD_CAST "if")) {
 		gIfMatch = false;
@@ -239,7 +242,7 @@ int parse_area(FILE *f,
 	int readcount;
     char chunk[1024];
 
-    gArea = area;
+    gArea = (xmlChar*)area;
     gLocal = BAD_CAST local;
     gLanguage = BAD_CAST language;
     gOperator = BAD_CAST operator;

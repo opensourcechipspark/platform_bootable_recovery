@@ -35,6 +35,10 @@
 #include "ui.h"
 #include "bootloader.h"
 
+#ifdef USE_RADICAL_UPDATE
+#include "radical_update.h"
+#endif
+
 extern RecoveryUI* ui;
 
 #define ASSUMED_UPDATE_BINARY_NAME  "META-INF/com/google/android/update-binary"
@@ -47,16 +51,24 @@ static const float DEFAULT_FILES_PROGRESS_FRACTION = 0.4;
 static const float DEFAULT_IMAGE_PROGRESS_FRACTION = 0.1;
 
 #if TARGET_BOARD_PLATFORM == rockchip
-extern bool bClearbootmessage;
+extern bool bNeedClearMisc;
 #endif
 
 #ifdef USE_BOARD_ID
 extern "C" int custom();
 extern "C" int restore();
-static bool gIfBoardIdCustom = false;
+// static bool gIfBoardIdCustom = false;
+bool gIfBoardIdCustom = false;      // 标识之后是否还要执行 board_id 定制. 在对 system_partition restore 之后置位. 
 #endif
 
 // If the package contains an update binary, extract it and run it.
+// @param path
+//      待安装的 ota_pkg 的路径字串. 
+// @param zip
+//      关联到 'path' 目标文件的 ZipArchive 实例的指针. 
+// @param wipe_cache
+//      传入 install 流程的 log file 的路径. 
+// 
 static int
 try_update_binary(const char *path, ZipArchive *zip, int* wipe_cache) {
     const ZipEntry* binary_entry =
@@ -124,15 +136,17 @@ try_update_binary(const char *path, ZipArchive *zip, int* wipe_cache) {
     args[0] = binary;
     args[1] = EXPAND(RECOVERY_API_VERSION);   // defined in Android.mk
     char* temp = (char*)malloc(10);
-    sprintf(temp, "%d", pipefd[1]);
+    sprintf(temp, "%d", pipefd[1]);     // "pipefd[1]" : 写端
     args[2] = temp;
     args[3] = (char*)path;
     args[4] = NULL;
 
     pid_t pid = fork();
-    if (pid == 0) {
+    if (pid == 0) {             // 子进程
+        // 关闭 读端.
         close(pipefd[0]);
-        execv(binary, (char* const*)args);
+        // .KP :
+        execv(binary, (char* const*)args);      // execv() 若成功, 将不返回.
         fprintf(stdout, "E:Can't run %s (%s)\n", binary, strerror(errno));
         _exit(-1);
     }
@@ -186,14 +200,23 @@ try_update_binary(const char *path, ZipArchive *zip, int* wipe_cache) {
     return INSTALL_SUCCESS;
 }
 
+/**
+ * install_package() 的实现主体.
+ * @param path
+ *      待安装的 ota_pkg 的路径字串. 
+ * @param install_file
+ *      传入 install 流程的 log file 的路径. 
+ * @param is_ru_pkg
+ *      当前待安装的 ota_pkg 是否是 ru_pkg.
+ */
 static int
-really_install_package(const char *path, int* wipe_cache)
+really_install_package(const char *path, int* wipe_cache, int is_ru_pkg)
 {
 	//by mmk@rock-chips.com
 	//if update loader, we hope not clear misc command.
 	//default not clear misc command, let the update-script of update.zip to clear misc when no update loader.
 #if TARGET_BOARD_PLATFORM == rockchip
-	bClearbootmessage = true;
+	bNeedClearMisc = false;
 #endif
 
     ui->SetBackground(RecoveryUI::INSTALLING_UPDATE);
@@ -220,7 +243,7 @@ really_install_package(const char *path, int* wipe_cache)
 
     ui->Print("Verifying update package...\n");
 
-    int err;
+    int err = VERIFY_SUCCESS;
     err = verify_file(path, loadedKeys, numKeys);
     free(loadedKeys);
     LOGI("verify_file returned %d\n", err);
@@ -241,9 +264,36 @@ really_install_package(const char *path, int* wipe_cache)
 #ifdef USE_BOARD_ID
     ensure_path_mounted("/cust");
     ensure_path_mounted("/system");
+    D("to restore system_partition.");
     restore();
 
     gIfBoardIdCustom = true;
+#endif
+
+#ifdef USE_RADICAL_UPDATE
+
+    // .KP : 
+    // 无论安装 ru_pkg 还是 original_ota_pkg 之前, 都要 restore 可能的 backup_of_fws_in_ota_ver. 
+    // 这样即便连续多次安装 ru_pkg, /radical_update/backup_of_fws_in_ota_ver 中保存的都是 fws_in_ota_ver. 
+    // 才能保证, 后续若安装 ota_diff_pkg, 不会失败. 
+
+    if ( 0 != ensure_path_mounted(SYSTEM_MOUNT_POINT) )
+    {
+        W("fail to mount system_partition.");
+    }
+    if ( 0 != ensure_path_mounted(RU_MOUNT_POINT) )
+    {
+        W("fail to mount ru_partition.");
+    }
+
+    if ( RadicalUpdate_isApplied() )
+    {
+        I("a ru_pkg is applied, to restore backup_of_fws_in_ota_ver to system_partition.");
+        RadicalUpdate_restoreFirmwaresInOtaVer();
+    }
+
+    ensure_path_unmounted(RU_MOUNT_POINT);
+    ensure_path_unmounted(SYSTEM_MOUNT_POINT);
 #endif
 
     /* Verify and install the contents of the package.
@@ -252,8 +302,19 @@ really_install_package(const char *path, int* wipe_cache)
     return try_update_binary(path, &zip, wipe_cache);
 }
 
+/**
+ * 安装指定路径的 ota_pkg.
+ * @param path
+ *      待安装的 ota_pkg 的路径字串. 
+ * @param wipe_cache
+ *      用于返回后续是否要 wipe cache 分区. 
+ * @param install_file
+ *      传入 install 流程的 log file 的路径. 
+ * @param is_ru_pkg
+ *      标识 'path' 指定的 ota_pkg 是否是 ru_pkg. 
+ */
 int
-install_package(const char* path, int* wipe_cache, const char* install_file)
+install_package(const char* path, int* wipe_cache, const char* install_file, int is_ru_pkg)
 {
     FILE* install_log = fopen_path(install_file, "w");
     if (install_log) {
@@ -268,12 +329,8 @@ install_package(const char* path, int* wipe_cache, const char* install_file)
 #endif
 
     int result;
-    if (setup_install_mounts() != 0) {
-        LOGE("failed to set up expected mounts for install; aborting\n");
-        result = INSTALL_ERROR;
-    } else {
-        result = really_install_package(path, wipe_cache);
-    }
+    result = really_install_package(path, wipe_cache, is_ru_pkg);
+
     if (install_log) {
         fputc(result == INSTALL_SUCCESS ? '1' : '0', install_log);
         fputc('\n', install_log);
@@ -284,7 +341,25 @@ install_package(const char* path, int* wipe_cache, const char* install_file)
     if(gIfBoardIdCustom) {
     	ensure_path_mounted("/cust");
     	ensure_path_mounted("/system");
+        D("to custom system_partition for board_id");
     	custom();
+    }
+#endif
+
+#ifdef USE_RADICAL_UPDATE
+    if ( is_ru_pkg ) {
+        D("installed a ru_pkg, to apply radical_update to system_partition.");
+        ensure_path_mounted("/radical_update");
+        ensure_path_mounted("/system");
+
+        I("to apply ru_pkg.");
+        RadicalUpdate_tryToApplyRadicalUpdate();
+        
+        D("to delete ru_pkg '%s' after being applied.", path);
+        unlink(path);
+    }
+    else {
+        I("installed an original_ota_pkg, do not apply radical_update to system_partition, there might be incompatibility between modules in ru_ver and ota_ver.");
     }
 #endif
 

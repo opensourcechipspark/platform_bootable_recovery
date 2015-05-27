@@ -18,6 +18,8 @@
 #include "parse_xml.h"
 #include "board_id_ctrl.h"
 
+#include "common.h"
+
 static int run(const char *filename, char *const argv[])
 {
     struct stat s;
@@ -25,7 +27,7 @@ static int run(const char *filename, char *const argv[])
     pid_t pid;
 
     if (stat(filename, &s) != 0) {
-        fprintf(stderr, "cannot find '%s'", filename);
+        E("cannot find '%s', err : %s", filename, strerror(errno) );
         return -1;
     }
 
@@ -34,22 +36,22 @@ static int run(const char *filename, char *const argv[])
         setpgid(0, getpid());
         /* execute */
         execv(filename, argv);
-        fprintf(stderr, "can't run %s (%s)\n", filename, strerror(errno));
+        LOGE("can't run %s (%s)\n", filename, strerror(errno));
         /* exit */
         _exit(0);
     }
 
     if (pid < 0) {
-        fprintf(stderr, "failed to fork and start '%s'\n", filename);
+        LOGE("failed to fork and start '%s'\n", filename);
         return -1;
     }
 
     if (-1 == waitpid(pid, &status, WCONTINUED | WUNTRACED)) {
-        fprintf(stderr, "wait for child error\n");
+        LOGD("wait for child error\n");
         return -1;
     }
 
-    printf("executed '%s' return %d\n", filename, WEXITSTATUS(status));
+    LOGI("executed '%s' return %d\n", filename, WEXITSTATUS(status));
     return 0;
 }
 
@@ -99,23 +101,23 @@ char *readBoardIdFromFile() {
 	char *result;
 	fp_id = fopen("cust/last_board_id", "r");
 	if(fp_id == NULL) {
-		printf("last_board_id not exist!\n");
+		E("fial to open last_board_id, err : %s.", strerror(errno) );
 		return NULL;
 	}
 
 	int length;
 	if(1 != fread(&length, 4, 1, fp_id)) {
-		printf("read board id length error!\n");
+		E("fail to read board id length, err : %s.", strerror(errno) );
 		fclose(fp_id);
 		return NULL;
 	}
 
-	printf("length:%d\n", length);
+	D("length:%d", length);
 
 	result = malloc(length);
 	memset(result, 0, length);
 	if(length != fread(result, 1, length, fp_id)) {
-		printf("read board id error, length is %d \n", length);
+		E("fail to read board id, err : %s.", strerror(errno) );
 		free(result);
 		fclose(fp_id);
 		return NULL;
@@ -124,7 +126,7 @@ char *readBoardIdFromFile() {
 
 	int i;
 	for(i = 0; i < length; i++) {
-		printf("board-id: %d \n", *(result+i));
+		D("board-id: %d", *(result+i));
 	}
 
 	fclose(fp_id);
@@ -144,7 +146,7 @@ int cleanBackup() {
 	cmd[3] = "cust/last_board_id";
 	run(cmd[0], cmd);
 
-	printf("clean backup files complete!\n");
+	I("clean backup files complete!");
 	return 0;
 }
 
@@ -159,7 +161,7 @@ int recoverProp() {
 	cmd[5] = NULL;
 	run(cmd[0], cmd);
 
-	printf("recover build.prop complete!\n");
+	I("recover build.prop complete!");
 	return 0;
 }
 
@@ -173,7 +175,7 @@ int restore() {
 
 	board_id = readBoardIdFromFile();
 	if(board_id == NULL) {
-		printf("no find last board id, so not restore....\n");
+		E("no find last board id, so not restore....");
 		board_id_close_device();
 		return 0;
 	}
@@ -205,19 +207,24 @@ int restore() {
 	board_id_get_operator_name_by_id(DEVICE_TYPE_OPERATOR, board_id, local, operator);
 	board_id_get_reserve_name_by_id(DEVICE_TYPE_RESERVE, board_id, local, reserve);
 	board_id_get_locale_region_by_id(DEVICE_TYPE_AREA, board_id, area, language, local, geo, timezone, user_define);
-	printf("get area form ioctrl: area=%s, language=%s, local=%s, timezone=%s, operator=%s, reserve=%s\n",
-				area, language, local, timezone, operator, reserve);
+	D("get area form ioctrl: area=%s, language=%s, local=%s, timezone=%s, operator=%s, reserve=%s",
+	    area,
+        language,
+        local,
+        timezone,
+        operator,
+        reserve);
 
 	fp_area = fopen("/cust/cust.xml", "r");
 	if(fp_area == NULL) {
-		printf("open area.xml error!\n");
+		E("fail to open area.xml. err : %s.", strerror(errno) );
 		free(board_id);
 		board_id_close_device();
 		return -1;
 	}
 
 	if(parse_area(fp_area, area, local, language, operator, reserve, restoreHandler)) {
-		printf("=============> parse area.xml error <===========\n");
+		E("=============> parse area.xml error <===========");
 		fclose(fp_area);
 		free(board_id);
 		board_id_close_device();
@@ -234,7 +241,7 @@ int restore() {
 
 	fp_device = fopen("/cust/device.xml", "r");
 	if(fp_device == NULL) {
-		printf("open device.xml error!\n");
+		E("fail to open device.xml, err : %s.", strerror(errno) );
 		free(board_id);
 		board_id_close_device();
 		return -1;
@@ -244,16 +251,16 @@ int restore() {
 		memset(type, 0, sizeof(type));
 		memset(dev, 0, sizeof(dev));
 		if(board_id_get_device_name_by_id(i, board_id, type, dev)) {
-			printf("===========> get device info error <===========\n");
+			E("===========> get device info error <===========");
 			fclose(fp_device);
 			free(board_id);
 			board_id_close_device();
 			return -1;
 		}
 
-		printf("get device info from ioctrl: type=%s, dev=%s \n", type, dev);
+		D("get device info from ioctrl: type=%s, dev=%s ", type, dev);
 		if(parse_device(fp_device, dev, type, restoreHandler)) {
-			printf("===========> parse device.xml error <==========\n");
+			E("===========> parse device.xml error <==========");
 			fclose(fp_device);
 			free(board_id);
 			board_id_close_device();
@@ -261,6 +268,7 @@ int restore() {
 		}
 	}
 
+    /* 恢复之前保存的 /system/build.prop 的 ota 版本. */
 	recoverProp();
 	cleanBackup();
 

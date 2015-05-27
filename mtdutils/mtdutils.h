@@ -23,9 +23,21 @@
 extern "C" {
 #endif
 
+struct MtdPartitionbyCmdline {
+    int device_index;
+    char name[20];
+};
+
 typedef struct MtdPartition MtdPartition;
+typedef struct MtdPartitionbyCmdline MtdPartitionbyCmdline;
+
+int mtd_scan_cmdline(void);
+
+const MtdPartitionbyCmdline *mtd_find_partition_by_cmdline(const char *name);
 
 int mtd_scan_partitions(void);
+
+int mtd_find_nand(void);
 
 const MtdPartition *mtd_find_partition_by_name(const char *name);
 

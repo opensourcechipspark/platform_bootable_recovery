@@ -33,7 +33,7 @@
 
 #include "minui.h"
 
-extern char* locale;
+extern char* recovery_locale;
 
 // libpng gives "undefined reference to 'pow'" errors, and I have no
 // idea how to convince the build system to link with -lm.  We don't
@@ -180,9 +180,9 @@ exit:
 }
 
 static int matches_locale(const char* loc) {
-    if (locale == NULL) return 0;
+    if (recovery_locale == NULL) return 0;
 
-    if (strcmp(loc, locale) == 0) return 1;
+    if (strcmp(loc, recovery_locale) == 0) return 1;
 
     // if loc does *not* have an underscore, and it matches the start
     // of locale, and the next character in locale *is* an underscore,
@@ -193,7 +193,7 @@ static int matches_locale(const char* loc) {
     for (i = 0; loc[i] != 0 && loc[i] != '_'; ++i);
     if (loc[i] == '_') return 0;
 
-    return (strncmp(locale, loc, i) == 0 && locale[i] == '_');
+    return (strncmp(recovery_locale, loc, i) == 0 && recovery_locale[i] == '_');
 }
 
 int res_create_localized_surface(const char* name, gr_surface* pSurface) {

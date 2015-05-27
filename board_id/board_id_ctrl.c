@@ -18,6 +18,9 @@
 #include <sys/ioctl.h>
 #include "board_id_ctrl.h"
 
+#include "common.h"
+// #include "custom_log.h"
+
 static int sCtrlFd = -1;
 int board_id_open_device(void)
 {
@@ -26,24 +29,25 @@ int board_id_open_device(void)
 		sCtrlFd = open("/dev/board_id_misc", O_RDWR);
 		if(sCtrlFd < 0)
 		{
-			printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+			E("error=%s.", strerror(errno));
 			return -1;
 		}
 	}
 
-	printf("%s\n",__FUNCTION__);
+    D("success to open board_id_misc");
         return 0;
 }
 
 int board_id_close_device(void)
 {
+        D("enter.");
+
         if(sCtrlFd >= 0)
         {
 	        close(sCtrlFd);
 	        sCtrlFd = -1;
     	}
 
-        printf("%s\n",__FUNCTION__);
         return 0;
 }
 
@@ -54,19 +58,24 @@ int board_id_get_locale_region(enum type_devices type, char *country_area, char 
 
 	if(type != DEVICE_TYPE_AREA)	
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d, error", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_AREA_ID, &area_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
-	printf("area_select: tid=%d, bid=%d, area=\"%s\", locale=\"%s\", region=\"%s\", timezone=\"%s\" \n",area_select.type, area_select.id, area_select.country_area,
-				area_select.locale_language, area_select.locale_region, area_select.timezone);
+    D("tid=%d, bid=%d, area=\"%s\", locale=\"%s\", region=\"%s\", timezone=\"%s\".",
+        area_select.type,
+        area_select.id,
+        area_select.country_area,
+		area_select.locale_language,
+        area_select.locale_region,
+        area_select.timezone);
 	
 	strcpy(country_area, area_select.country_area);
 	strcpy(locale_language, area_select.locale_language);	
@@ -96,13 +105,13 @@ int board_id_get_operator_name(enum type_devices type, char *locale_region, char
 
 	if(type != DEVICE_TYPE_OPERATOR)	
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_OPERATOR_ID, &operator_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
@@ -126,13 +135,13 @@ int board_id_get_reserve_name(enum type_devices type, char *locale_region, char 
 
 	if(type != DEVICE_TYPE_RESERVE)	
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_RESERVE_ID, &reserve_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
@@ -158,7 +167,7 @@ int board_id_get_device_name(enum type_devices type, char *type_name, char *dev_
 
 	if((type < DEVICE_TYPE_TP) || (type >= DEVICE_NUM_TYPES))
 	{
-		printf("%s:type is out of range,type=%d\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
@@ -302,20 +311,24 @@ int board_id_get_device_name(enum type_devices type, char *type_name, char *dev_
 		break;
 
 		default:
-			printf("%s:type = %d is error\n",__FUNCTION__, type);
+			D("type = %d, is error.", type);
 			goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, ioctl_cmd_temp, &device_selected_temp) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
-	printf("device_select: tid=%d, bid=%d, type=\"%s\", dev=\"%d\", desc=\"%s\"\n",
-			device_selected_temp.type, device_selected_temp.id, device_selected_temp.type_name,
-			device_selected_temp.dev_name, device_selected_temp.description);
+	D("tid=%d, bid=%d, type=\"%s\", dev=\"%s\", desc=\"%s\"",
+	    device_selected_temp.type,
+        device_selected_temp.id,
+        device_selected_temp.type_name,
+		device_selected_temp.dev_name,
+        device_selected_temp.description);
+
 	strcpy(type_name, device_selected_temp.type_name);
 	strcpy(dev_name, device_selected_temp.dev_name);
 
@@ -336,7 +349,7 @@ int board_id_get_locale_region_by_id(enum type_devices type, char *id, char *cou
 
 	if(!id)
 	{
-		printf("%s:id is null\n",__FUNCTION__);
+		E("id is null");
 		goto error;
 	}	
 		
@@ -345,20 +358,20 @@ int board_id_get_locale_region_by_id(enum type_devices type, char *id, char *cou
 
 	if(type != DEVICE_TYPE_AREA)
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_AREA_NAME_BY_ID, &area_last_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
 	if((area_last_select.id != (int)id[type]) || (area_last_select.type != (int)type))
 	{
-		printf("%s:line=%d,type=%d,%d,id=%d,%d\n",__FUNCTION__, __LINE__, area_last_select.type, type, area_last_select.id, id[type]);
+		E("type=%d,%d,id=%d,%d", area_last_select.type, type, area_last_select.id, id[type]);
 		result = -1;
 		goto error;
 	}
@@ -391,7 +404,7 @@ int board_id_get_operator_name_by_id(enum type_devices type, char *id, char *loc
 
 	if(!id)
 	{
-		printf("%s:id is null\n",__FUNCTION__);
+		E("id is null.");
 		goto error;
 	}	
 
@@ -400,20 +413,20 @@ int board_id_get_operator_name_by_id(enum type_devices type, char *id, char *loc
 
 	if(type != DEVICE_TYPE_OPERATOR)
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_OPERATOR_NAME_BY_ID, &operator_last_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
 	if((operator_last_select.id != (int)((id[type] << 8) | id[type+1])) || (operator_last_select.type != (int)type))
 	{
-		printf("%s:line=%d,type=%d,%d,id=%d,%d\n",__FUNCTION__, __LINE__, operator_last_select.type, type, operator_last_select.id, ((id[type] << 8) | id[type+1]));
+		E("type = %d, %d; id=%d, %d", operator_last_select.type, type, operator_last_select.id, ((id[type] << 8) | id[type+1]));
 		result = -1;
 		goto error;
 	}
@@ -437,7 +450,7 @@ int board_id_get_reserve_name_by_id(enum type_devices type, char *id, char *loca
 
 	if(!id)
 	{
-		printf("%s:id is null\n",__FUNCTION__);
+		E("id is null");
 		goto error;
 	}	
 		
@@ -446,20 +459,20 @@ int board_id_get_reserve_name_by_id(enum type_devices type, char *id, char *loca
 
 	if(type != DEVICE_TYPE_RESERVE)
 	{
-		printf("%s:type = %d is error\n",__FUNCTION__, type);
+		E("type = %d is error.", type);
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, BOARD_ID_IOCTL_READ_RESERVE_NAME_BY_ID, &reserve_last_select) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
 	if((reserve_last_select.id != (int)id[type]) || (reserve_last_select.type != (int)type))
 	{
-		printf("%s:line=%d,type=%d,%d,id=%d,%d\n",__FUNCTION__, __LINE__, reserve_last_select.type, type, reserve_last_select.id, id[type]);
+		E("type=%d,%d; id=%d,%d", reserve_last_select.type, type, reserve_last_select.id, id[type]);
 		result = -1;
 		goto error;
 	}
@@ -485,7 +498,7 @@ int board_id_get_device_name_by_id(enum type_devices type, char *id, char *type_
 
 	if(!id)
 	{
-		printf("%s:id is null\n",__FUNCTION__);
+		D("id is null");
 		goto error;
 	}
 
@@ -494,7 +507,7 @@ int board_id_get_device_name_by_id(enum type_devices type, char *id, char *type_
 
 	if((type < DEVICE_TYPE_TP) || (type >= DEVICE_NUM_TYPES))
 	{
-		printf("%s:type is out of range,type=%d\n",__FUNCTION__, type);
+		E("unexpected 'type' = %d.", type);
 		goto error;
 	}
 	
@@ -502,21 +515,25 @@ int board_id_get_device_name_by_id(enum type_devices type, char *id, char *type_
 
 	if ( 0 > ioctl(sCtrlFd, ioctl_cmd_temp, &device_selected_temp) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}
 
 	if((device_selected_temp.type != (int)type) || (device_selected_temp.id != (int)id[type]) )
 	{
-		printf("%s:type=%d,%d,id=%d,%d\n",__FUNCTION__, device_selected_temp.type, type, device_selected_temp.id, id[type]);
+		E("type=%d,%d,id=%d,%d", device_selected_temp.type, type, device_selected_temp.id, id[type]);
 		result = -1;
 		goto error;
 	}	
 
-	printf("id=%d, device_id=%d, dev_name=%s, type=%d, type_name=%s\n",
-				device_selected_temp.id, device_selected_temp.device_id, device_selected_temp.dev_name,
-				device_selected_temp.type, device_selected_temp.type_name);
+	D("id=%d, device_id=%d, dev_name=%s, type=%d, type_name=%s",
+	    device_selected_temp.id,
+        device_selected_temp.device_id,
+        device_selected_temp.dev_name,
+		device_selected_temp.type,
+        device_selected_temp.type_name);
+
 	strcpy(type_name, device_selected_temp.type_name);
 	strcpy(dev_name, device_selected_temp.dev_name);
 
@@ -538,13 +555,13 @@ int board_id_get(char *id)
 
 	if(!id)
 	{
-		printf("%s:id is null\n",__FUNCTION__);
+		E("id is null.");
 		goto error;
 	}
 
 	if ( 0 > ioctl(sCtrlFd, ioctl_cmd_temp, id) )
 	{
-		printf("%s:line=%d,error=%s\n",__FUNCTION__, __LINE__, strerror(errno));
+		E("fail to ioctl, error = %s.", strerror(errno));
 		result = -1;
 		goto error;
 	}

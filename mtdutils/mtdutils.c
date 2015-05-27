@@ -65,7 +65,91 @@ static MtdState g_mtd_state = {
     -1      // partition_count
 };
 
+int ParamerNum=0;
+MtdPartitionbyCmdline g_mtd_parameter[32];
+
+#define CMD_PROC_FILENAME   "/proc/cmdline"
+
+int mtd_find_nand(void)
+{
+	int fd,ret;
+	char buf[2048];
+	char *pbuf=NULL;
+	
+	fd = open(CMD_PROC_FILENAME, O_RDONLY);
+	if (fd < 0) {
+		return -1;
+	}
+	memset(buf,0,2048);
+	ret = read(fd, buf, 2048);
+	close(fd);
+	pbuf=strstr (buf,"androidboot.mode=emmc");
+	if(pbuf==NULL){
+	   printf("find nand device\n");
+	   return 1;
+	}
+
+	return 0;
+}
+
+const MtdPartitionbyCmdline* mtd_find_partition_by_cmdline(const char *name)
+{
+	int i;
+	for(i=0;i<ParamerNum;i++){
+		if(strcmp(g_mtd_parameter[i].name,name)==0)
+			return &g_mtd_parameter[i];
+	}
+
+	return NULL;
+}
+
+int 
+mtd_scan_cmdline()
+{
+	int ret=0,i=0;
+	char buf[2048];
+	char *pbuf=NULL;
+	int count=0;
+	int mEnd=-1;
+	int mStart=-1;
+	int fd;
+
+	 fd = open(CMD_PROC_FILENAME, O_RDONLY);
+    	if (fd < 0) {
+        goto bail;
+    	}
+
+	memset(buf,0,2048);
+	ret = read(fd, buf, 2048);
+	pbuf=buf;
+	while(1){
+		mStart=strcspn(pbuf,"(");		
+		if(mStart<=0)
+			break;
+
+		mEnd=strcspn(pbuf,")");
+		if(mEnd<=0)
+			break;
+		
+		for(i=0;i<(mEnd-mStart-1);i++)
+			g_mtd_parameter[count].name[i]=pbuf[mStart+i+1];
+
+		g_mtd_parameter[count].device_index=count+1;
+		
+		pbuf=&pbuf[mEnd+1];
+
+		count++;
+	};
+	ParamerNum=count-1;	
+	close(fd);
+	return 1;
+		
+bail:
+	return -1;
+}
+
 #define MTD_PROC_FILENAME   "/proc/mtd"
+
 
 int
 mtd_scan_partitions()
@@ -75,7 +159,7 @@ mtd_scan_partitions()
     int fd;
     int i;
     ssize_t nbytes;
-
+	
     if (g_mtd_state.partitions == NULL) {
         const int nump = 32;
         MtdPartition *partitions = malloc(nump * sizeof(*partitions));
@@ -134,8 +218,14 @@ mtd_scan_partitions()
         mtdname[0] = '\0';
         mtdnum = -1;
 
+#ifndef USE_OLD_NAND_DRIVER
+        matches = sscanf(bufp, "rknand%d: %x %x \"%63[^\"]",
+                &mtdnum, &mtdsize, &mtderasesize, mtdname);
+        printf("matches %d, mtdnum %d, mtdsize %X, mtderasesize %X, mtdname %s\n", matches, mtdnum, mtdsize, mtderasesize, mtdname);
+#else
         matches = sscanf(bufp, "mtd%d: %x %x \"%63[^\"]",
                 &mtdnum, &mtdsize, &mtderasesize, mtdname);
+#endif
         /* This will fail on the first line, which just contains
          * column headers.
          */
@@ -184,6 +274,7 @@ mtd_find_partition_by_name(const char *name)
         for (i = 0; i < g_mtd_state.partitions_allocd; i++) {
             MtdPartition *p = &g_mtd_state.partitions[i];
             if (p->device_index >= 0 && p->name != NULL) {
+                printf ("find_partition : p->name %s, name %s\n", p->name, name);
                 if (strcmp(p->name, name) == 0) {
                     return p;
                 }
@@ -201,7 +292,12 @@ mtd_mount_partition(const MtdPartition *partition, const char *mount_point,
     char devname[64];
     int rv = -1;
 
+#ifndef USE_OLD_NAND_DRIVER
+    sprintf(devname, "/dev/block/rknand_%s", partition->name);
+    printf(" %d : devname : %s\n", __LINE__, devname);
+#else
     sprintf(devname, "/dev/block/mtdblock%d", partition->device_index);
+#endif
     if (!read_only) {
         rv = mount(devname, mount_point, filesystem, flags, NULL);
     }
@@ -243,14 +339,22 @@ mtd_partition_info(const MtdPartition *partition,
         size_t *total_size, size_t *erase_size, size_t *write_size)
 {
     char mtddevname[32];
+#ifndef USE_OLD_NAND_DRIVER
+    sprintf(mtddevname, "/dev/block/rknand_%s", partition->name);
+    printf(" %d : devname : %s\n", __LINE__, mtddevname);
+#else
     sprintf(mtddevname, "/dev/mtd/mtd%d", partition->device_index);
+#endif
     int fd = open(mtddevname, O_RDONLY);
     if (fd < 0) return -1;
 
+    printf(" %d : devname : %s\n", __LINE__, mtddevname);
     struct mtd_info_user mtd_info;
+#ifdef USE_OLD_NAND_DRIVER
     int ret = ioctl(fd, MEMGETINFO, &mtd_info);
     close(fd);
     if (ret < 0) return -1;
+    printf(" %d : devname : %s\n", __LINE__, mtddevname);
 
     if (total_size != NULL) *total_size = mtd_info.size;
 #if TARGET_BOARD_PLATFORM == rockchip
@@ -262,6 +366,17 @@ mtd_partition_info(const MtdPartition *partition,
 #else
     if (erase_size != NULL) *erase_size = mtd_info.erasesize;
     if (write_size != NULL) *write_size = mtd_info.writesize;
+#endif
+
+#else
+    if (total_size != NULL)
+        *total_size = partition->size;
+    
+    if (erase_size != NULL)
+        *erase_size = (partition->erase_size > 32*512) ? partition->erase_size : 32*512;
+
+    if (write_size != NULL)
+        *write_size = (partition->erase_size > 32*512) ? partition->erase_size : 32*512;
 #endif
     return 0;
 }
@@ -278,7 +393,12 @@ MtdReadContext *mtd_read_partition(const MtdPartition *partition)
     }
 
     char mtddevname[32];
+#ifndef USE_OLD_NAND_DRIVER
+    sprintf(mtddevname, "/dev/block/rknand_%s", partition->name);
+    printf(" %d : devname : %s\n", __LINE__, mtddevname);
+#else
     sprintf(mtddevname, "/dev/mtd/mtd%d", partition->device_index);
+#endif
     ctx->fd = open(mtddevname, O_RDONLY);
     if (ctx->fd < 0) {
         free(ctx->buffer);
@@ -407,7 +527,12 @@ MtdWriteContext *mtd_write_partition(const MtdPartition *partition)
     }
 
     char mtddevname[32];
+#ifndef USE_OLD_NAND_DRIVER
+    sprintf(mtddevname, "/dev/block/rknand_%s", partition->name);
+    printf(" %d : devname : %s\n", __LINE__, mtddevname);
+#else
     sprintf(mtddevname, "/dev/mtd/mtd%d", partition->device_index);
+#endif
     ctx->fd = open(mtddevname, O_RDWR);
     if (ctx->fd < 0) {
         free(ctx->buffer);
